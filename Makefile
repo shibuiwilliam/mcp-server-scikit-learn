@@ -23,3 +23,7 @@ mypy:
 .PHONY: pre-commit-install
 pre-commit-install:
 	pre-commit install
+
+.PHONY: test
+test:
+	pytest -s -v $(TEST)

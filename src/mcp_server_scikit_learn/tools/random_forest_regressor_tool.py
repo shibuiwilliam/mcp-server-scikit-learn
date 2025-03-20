@@ -4,7 +4,7 @@ from typing import Any, Optional
 import mcp.types as types
 import polars as pl
 from pydantic import BaseModel, ConfigDict
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 from ..configure_logger import make_logger
@@ -14,7 +14,7 @@ from .tools import MCPServerScikitLearnTools
 logger = make_logger(__name__)
 
 
-class RandomForestClassifierInputSchema(BaseModel):
+class RandomForestRegressorInputSchema(BaseModel):
     model_config = ConfigDict(
         validate_assignment=True,
         frozen=True,
@@ -26,20 +26,18 @@ class RandomForestClassifierInputSchema(BaseModel):
     target_column: str
     prediction_dataset: list[dict[str, str | int | float | bool | None]]
     column_to_ignore: Optional[list[str]] = None
-    predict_proba: bool = False
     # Random Forest hyperparameters
     n_estimators: Optional[int] = 100
-    criterion: Optional[str] = "gini"
+    criterion: Optional[str] = "squared_error"
     max_depth: Optional[int | None] = None
     min_samples_split: Optional[int | float] = 2
     min_samples_leaf: Optional[int | float] = 0
     min_weight_fraction_leaf: Optional[float] = 0.0
-    max_features: Optional[str | int | float] = "sqrt"
+    max_features: Optional[str | int | float] = 1.0
     max_leaf_nodes: Optional[int | None] = None
     min_impurity_decrease: Optional[float] = 0.0
     bootstrap: Optional[bool] = True
     oob_score: Optional[bool] = False
-    class_weight: Optional[str | dict | list[dict] | None] = None
     ccp_alpha: Optional[float] = 0.0
 
     @staticmethod
@@ -64,17 +62,13 @@ class RandomForestClassifierInputSchema(BaseModel):
                     "items": {"type": "string"},
                     "description": "The columns to ignore in training and prediction.",
                 },
-                "predict_proba": {
-                    "type": "bool",
-                    "description": "Whether to predict probabilities or not.",
-                },
                 "n_estimators": {
                     "type": "integer",
                     "description": "The number of trees in the forest.",
                 },
                 "criterion": {
                     "type": "string",
-                    "enum": ["gini", "entropy", "log_loss"],
+                    "enum": ["squared_error", "absolute_error", "poisson"],
                     "description": "The function to measure the quality of a split.",
                 },
                 "max_depth": {
@@ -113,10 +107,6 @@ class RandomForestClassifierInputSchema(BaseModel):
                     "type": "boolean",
                     "description": "Whether to use out-of-bag samples to estimate the generalization score.",
                 },
-                "class_weight": {
-                    "type": ["string", "object", "array"],
-                    "description": "Weights associated with classes in the form {class_label: weight}.",
-                },
                 "ccp_alpha": {
                     "type": "number",
                     "description": "Complexity parameter used for Minimal Cost-Complexity Pruning.",
@@ -130,30 +120,27 @@ class RandomForestClassifierInputSchema(BaseModel):
         target_column: str,
         prediction_dataset: str,
         column_to_ignore: Optional[list[str]] = None,
-        predict_proba: bool = False,
         n_estimators: Optional[int] = 100,
-        criterion: Optional[str] = "gini",
+        criterion: Optional[str] = "squared_error",
         max_depth: Optional[int | None] = None,
         min_samples_split: Optional[int | float] = 2,
         min_samples_leaf: Optional[int | float] = 0,
         min_weight_fraction_leaf: Optional[float] = 0.0,
-        max_features: Optional[str | int | float] = "sqrt",
+        max_features: Optional[str | int | float] = 1.0,
         max_leaf_nodes: Optional[int | None] = None,
         min_impurity_decrease: Optional[float] = 0.0,
         bootstrap: Optional[bool] = True,
         oob_score: Optional[bool] = False,
-        class_weight: Optional[str | dict | list[dict] | None] = None,
         ccp_alpha: Optional[float] = 0.0,
-    ) -> "RandomForestClassifierInputSchema":
+    ) -> "RandomForestRegressorInputSchema":
         structured_training_dataset = string_to_list_dict(training_dataset)
         structured_prediction_dataset = string_to_list_dict(prediction_dataset)
 
-        return RandomForestClassifierInputSchema(
+        return RandomForestRegressorInputSchema(
             training_dataset=structured_training_dataset,
             target_column=target_column,
             prediction_dataset=structured_prediction_dataset,
             column_to_ignore=column_to_ignore,
-            predict_proba=predict_proba,
             n_estimators=n_estimators,
             criterion=criterion,
             max_depth=max_depth,
@@ -165,50 +152,46 @@ class RandomForestClassifierInputSchema(BaseModel):
             min_impurity_decrease=min_impurity_decrease,
             bootstrap=bootstrap,
             oob_score=oob_score,
-            class_weight=class_weight,
             ccp_alpha=ccp_alpha,
         )
 
 
-random_forest_classifier_tool = types.Tool(
-    name=MCPServerScikitLearnTools.RANDOM_FOREST_CLASSIFIER.value,
-    description="Train and predict with Random Forest Classifier.",
-    inputSchema=RandomForestClassifierInputSchema.input_schema(),
+random_forest_regressor_tool = types.Tool(
+    name=MCPServerScikitLearnTools.RANDOM_FOREST_REGRESSOR.value,
+    description="Train and predict with Random Forest Regressor.",
+    inputSchema=RandomForestRegressorInputSchema.input_schema(),
 )
 
 
-async def handle_random_forest_classifier_tool(
+async def handle_random_forest_regressor_tool(
     arguments: dict[str, Any],
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-    logger.info("Handling random forest classifier tool")
+    logger.info("Handling random forest regressor tool")
 
     training_dataset = arguments["training_dataset"]
     target_column = arguments["target_column"]
     prediction_dataset = arguments["prediction_dataset"]
     column_to_ignore = arguments.get("column_to_ignore", None)
-    predict_proba = arguments.get("predict_proba", False)
 
     # Get hyperparameters from arguments
     n_estimators = arguments.get("n_estimators", 100)
-    criterion = arguments.get("criterion", "gini")
+    criterion = arguments.get("criterion", "squared_error")
     max_depth = arguments.get("max_depth", None)
     min_samples_split = arguments.get("min_samples_split", 2)
     min_samples_leaf = arguments.get("min_samples_leaf", 1)
     min_weight_fraction_leaf = arguments.get("min_weight_fraction_leaf", 0.0)
-    max_features = arguments.get("max_features", "sqrt")
+    max_features = arguments.get("max_features", 1.0)
     max_leaf_nodes = arguments.get("max_leaf_nodes", None)
     min_impurity_decrease = arguments.get("min_impurity_decrease", 0.0)
     bootstrap = arguments.get("bootstrap", True)
     oob_score = arguments.get("oob_score", False)
-    class_weight = arguments.get("class_weight", None)
     ccp_alpha = arguments.get("ccp_alpha", 0.0)
 
-    random_forest_classifier_input = RandomForestClassifierInputSchema.from_str(
+    random_forest_regressor_input = RandomForestRegressorInputSchema.from_str(
         training_dataset,
         target_column,
         prediction_dataset,
         column_to_ignore,
-        predict_proba,
         n_estimators=n_estimators,
         criterion=criterion,
         max_depth=max_depth,
@@ -220,20 +203,19 @@ async def handle_random_forest_classifier_tool(
         min_impurity_decrease=min_impurity_decrease,
         bootstrap=bootstrap,
         oob_score=oob_score,
-        class_weight=class_weight,
         ccp_alpha=ccp_alpha,
     )
 
-    train_df = pl.DataFrame(random_forest_classifier_input.training_dataset)
-    prediction_df = pl.DataFrame(random_forest_classifier_input.prediction_dataset)
+    train_df = pl.DataFrame(random_forest_regressor_input.training_dataset)
+    prediction_df = pl.DataFrame(random_forest_regressor_input.prediction_dataset)
     training_columns = []
     numerical_columns_scalars = {}
     categorical_columns_encoders = {}
 
     for col in train_df.columns:
-        if col == random_forest_classifier_input.target_column:
+        if col == random_forest_regressor_input.target_column:
             continue
-        if random_forest_classifier_input.column_to_ignore and col in random_forest_classifier_input.column_to_ignore:
+        if random_forest_regressor_input.column_to_ignore and col in random_forest_regressor_input.column_to_ignore:
             continue
 
         training_columns.append(col)
@@ -249,9 +231,9 @@ async def handle_random_forest_classifier_tool(
             categorical_columns_encoders[col] = label_encoder
 
     for col in prediction_df.columns:
-        if col == random_forest_classifier_input.target_column:
+        if col == random_forest_regressor_input.target_column:
             continue
-        if random_forest_classifier_input.column_to_ignore and col in random_forest_classifier_input.column_to_ignore:
+        if random_forest_regressor_input.column_to_ignore and col in random_forest_regressor_input.column_to_ignore:
             continue
         if col not in training_columns:
             continue
@@ -271,53 +253,47 @@ async def handle_random_forest_classifier_tool(
                 pl.Series(col, categorical_columns_encoders[col].transform(prediction_df[col].to_list()))
             )
 
-    x = train_df.drop(random_forest_classifier_input.target_column)
-    if random_forest_classifier_input.column_to_ignore:
-        x = x.drop(*random_forest_classifier_input.column_to_ignore)
+    x = train_df.drop(random_forest_regressor_input.target_column)
+    if random_forest_regressor_input.column_to_ignore:
+        x = x.drop(*random_forest_regressor_input.column_to_ignore)
     x = x.to_numpy()
-    y = train_df[random_forest_classifier_input.target_column].to_numpy()
+    y = train_df[random_forest_regressor_input.target_column].to_numpy()
 
-    estimator = RandomForestClassifier(
-        n_estimators=random_forest_classifier_input.n_estimators,
-        criterion=random_forest_classifier_input.criterion,
-        max_depth=random_forest_classifier_input.max_depth,
-        min_samples_split=random_forest_classifier_input.min_samples_split,
-        min_samples_leaf=random_forest_classifier_input.min_samples_leaf,
-        min_weight_fraction_leaf=random_forest_classifier_input.min_weight_fraction_leaf,
-        max_features=random_forest_classifier_input.max_features,
-        max_leaf_nodes=random_forest_classifier_input.max_leaf_nodes,
-        min_impurity_decrease=random_forest_classifier_input.min_impurity_decrease,
-        bootstrap=random_forest_classifier_input.bootstrap,
-        oob_score=random_forest_classifier_input.oob_score,
-        n_jobs=-1,
-        random_state=42,
-        class_weight=random_forest_classifier_input.class_weight,
-        ccp_alpha=random_forest_classifier_input.ccp_alpha,
+    estimator = RandomForestRegressor(
+        n_estimators=random_forest_regressor_input.n_estimators,
+        criterion=random_forest_regressor_input.criterion,
+        max_depth=random_forest_regressor_input.max_depth,
+        min_samples_split=random_forest_regressor_input.min_samples_split,
+        min_samples_leaf=random_forest_regressor_input.min_samples_leaf,
+        min_weight_fraction_leaf=random_forest_regressor_input.min_weight_fraction_leaf,
+        max_features=random_forest_regressor_input.max_features,
+        max_leaf_nodes=random_forest_regressor_input.max_leaf_nodes,
+        min_impurity_decrease=random_forest_regressor_input.min_impurity_decrease,
+        bootstrap=random_forest_regressor_input.bootstrap,
+        oob_score=random_forest_regressor_input.oob_score,
+        n_jobs=-1,  # Set internally to use all available cores
+        random_state=42,  # Set internally for reproducibility
+        ccp_alpha=random_forest_regressor_input.ccp_alpha,
     )
     estimator.fit(x, y)
 
     prediction_x = (
-        prediction_df.drop(random_forest_classifier_input.target_column)
-        if random_forest_classifier_input.target_column in prediction_df.columns
+        prediction_df.drop(random_forest_regressor_input.target_column)
+        if random_forest_regressor_input.target_column in prediction_df.columns
         else prediction_df
     )
-    if random_forest_classifier_input.column_to_ignore:
-        prediction_x = prediction_x.drop(*random_forest_classifier_input.column_to_ignore)
+    if random_forest_regressor_input.column_to_ignore:
+        prediction_x = prediction_x.drop(*random_forest_regressor_input.column_to_ignore)
     prediction_x = prediction_x.to_numpy()
 
-    if random_forest_classifier_input.predict_proba:
-        proba = estimator.predict_proba(prediction_x)
-        classes = estimator.classes_.tolist()
-        result = [{classes[i]: proba[j][i] for i in range(len(classes))} for j in range(len(proba))]
-    else:
-        result = estimator.predict(prediction_x).tolist()
+    result = estimator.predict(prediction_x).tolist()
 
     return [
         types.TextContent(
             type="text",
             text=json.dumps(
                 {
-                    "description": "Result of Random Forest Classifier.",
+                    "description": "Result of Random Forest Regressor.",
                     "predictions": result,
                 }
             ),
